@@ -16,8 +16,8 @@ namespace std {
 class Table;
 class Logging {
 public:
-	enum LOG_OBJECT {INSERT=1, DELTA_SPACE=2, VERSION_VECVALUE=3, HASHTABLE=4, VERSION_COLUMN=5};
-	enum LOG_ACTION {TX_START=1, TX_COMMIT=2, TX_END=3, COLUMN_START=11, COLUMN_END=12};
+	enum LOG_OBJECT {NO_OBJECT = 0, INSERT=1, DELTA_SPACE=2, VERSION_VECVALUE=3, HASHTABLE=4, VERSION_COLUMN=5};
+	enum LOG_ACTION {NO_ACTION = 0, TX_START=1, TX_COMMIT=2, TX_END=3, COLUMN_START=11, COLUMN_END=12};
 	struct logging {
 		size_t txIdx;
 		string colName;
@@ -29,6 +29,7 @@ public:
 	static const size_t PUBLIC_LOG_BUFFER_LIMIT = 1000000;
 private:
 	string logPath = "log";
+	string masterFile = "masterFile.txt";
 	vector<logging>* privateLogBuffer;
 
 public:

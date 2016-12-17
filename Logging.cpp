@@ -37,6 +37,8 @@ void Logging::saveCheckpoint(Table* table) {
 		content->push_back(table->saveToDisk(this->logPath));
 		content->push_back("Checkpoint end " + to_string(Util::currentMilisecond()));
 		Util::saveToDisk(content, fileName);
+		// add to master file
+		Util::appendToFile("checkpoint:" + fileName, logPath + "/" + masterFile);
 	}
 }
 
@@ -52,12 +54,14 @@ void Logging::redoLogUpdate(size_t txIdx, LOG_ACTION txAction, string colName){
 	newLog.txIdx = txIdx;
 	newLog.txAction = txAction;
 	newLog.colName = colName;
+	newLog.objType = LOG_OBJECT::NO_OBJECT;
 	privateLogBuffer->push_back(newLog);
 }
 
 void Logging::redoLogAdd(size_t txIdx, LOG_OBJECT objType, vector<string> logContent) {
 	logging newLog;
 	newLog.txIdx = txIdx;
+	newLog.txAction = LOG_ACTION::NO_ACTION;
 	newLog.objType = objType;
 	newLog.logContent = logContent;
 	privateLogBuffer->push_back(newLog);
@@ -95,6 +99,8 @@ void Logging::redoLogSave() {
 				contentValue += "|column_end";
 				break;
 			}
+			case NO_ACTION:
+				break;
 		}
 		if (log.colName != "") {
 			contentValue += "|" + log.colName;
@@ -115,6 +121,8 @@ void Logging::redoLogSave() {
 			case VERSION_COLUMN:
 				contentValue += "|version_column|";
 				break;
+			case NO_OBJECT:
+				break;
 		}
 		if (log.logContent.size() > 0) {
 			string tmpValue = "";
@@ -123,39 +131,42 @@ void Logging::redoLogSave() {
 				tmpValue += value + "|";
 			}
 			contentValue += tmpValue;
-			content->push_back(contentValue);
 		}
+		content->push_back(contentValue);
 	}
 	if (publicLogBuffer->size() > 0) {
 		cout << "Start log save" << endl;
 		// save to disk
 		Util::saveToDisk(content, logFileName);
+		// add to master file
+		Util::appendToFile("redo_log:" + logFileName, logPath + "/" + masterFile);
 		publicLogBuffer->resize(0);
 		cout << "End log save" << endl;
 	}
 }
 
 void Logging::restore(Table* table) {
-	cout << "here -1" << endl;
 	// get latest checkpoint
-	string latestCkpt = Util::getLatestFile(logPath, "checkpoint");
-	if (latestCkpt != "") {
+	vector<string> checkpointFile;
+	Util::getContentFromMasterFile(logPath + "/" + masterFile, "checkpoint", checkpointFile);
+	if (checkpointFile.size() > 0) {
 		cout << "Start redo log restore !" << endl;
 		// restore from checkpoint
 		vector<string>* content = new vector<string>();
-		Util::readFromDisk(content, latestCkpt);
+		Util::readFromDisk(content, checkpointFile.at(0));
 		if (content->size() >= 3) {
 			string tableFile = content->at(1);
 			table->restore(tableFile);
+			cout << "Restored from checkpoint file: " + checkpointFile.at(0) << endl;
 		}
 		delete content;
 		// get redo log from checkpoint
-		long ckptTime = stol(latestCkpt.substr(latestCkpt.find("checkpoint") + 1));
-		vector<string> allRedoLogs = Util::getNewestFiles(logPath, "redo_log", ckptTime);
+		vector<string> redoLogs;
+		Util::getContentFromMasterFile(logPath + "/" + masterFile, "redo_log", redoLogs);
 		// sort by oldest to newest file name
-		std::sort(allRedoLogs.begin(), allRedoLogs.end());
+		std::sort(redoLogs.begin(), redoLogs.end());
 		// restore redo log
-		for (string redoFile : allRedoLogs) {
+		for (string redoFile : redoLogs) {
 			vector<string>* redoContent = new vector<string>();
 			Util::readFromDisk(redoContent, redoFile);
 			vector<string>* deltaSpaceLog = new vector<string>();
@@ -164,11 +175,11 @@ void Logging::restore(Table* table) {
 			vector<string>* versionColumnLog = new vector<string>();
 			vector<string>* hashtableLog = new vector<string>();
 
+			string colName = "";
 			for (size_t i = 0; i < redoContent->size(); i++) {
 				string log = redoContent->at(i);
-				string colName = "";
 				if (log.find("column_start") != string::npos) {
-					colName = log.substr(log.find("column_start")+1);
+					colName = Util::substr(log, "column_start|");
 					// re-init log vector
 					deltaSpaceLog = new vector<string>();
 					versionVecValueLog = new vector<string>();
@@ -177,31 +188,32 @@ void Logging::restore(Table* table) {
 					hashtableLog = new vector<string>();
 				}
 				if (log.find("delta_space") != string::npos) {
-					string logContent = log.substr(log.find("delta_space")+1);
+					string logContent = Util::substr(log, "delta_space");
 					Util::parseContentToVector(deltaSpaceLog, logContent, "|");
 				}
 				else if (log.find("insert") != string::npos) {
-					string logContent = log.substr(log.find("insert")+1);
+					string logContent = Util::substr(log, "insert");
 					Util::parseContentToVector(insertLog, logContent, "|");
 				}
 				else if (log.find("version_vec_value") != string::npos) {
-					string logContent = log.substr(log.find("version_vec_value")+1);
+					string logContent = Util::substr(log, "version_vec_value");
 					Util::parseContentToVector(versionVecValueLog, logContent, "|");
 				}
 				else if (log.find("version_column") != string::npos) {
-					string logContent = log.substr(log.find("version_column")+1);
+					string logContent = Util::substr(log, "version_column");
 					Util::parseContentToVector(versionColumnLog, logContent, "|");
 				}
 				else if (log.find("hashtable") != string::npos) {
-					string logContent = log.substr(log.find("hashtable")+1);
+					string logContent = Util::substr(log, "hashtable");
 					Util::parseContentToVector(hashtableLog, logContent, "|");
 				}
-				if (log.find("column_end") != string::npos && table != NULL && colName != "") {
+				if (log.find("column_end") != string::npos && colName != "") {
 					// restore
 					table->redoLogRestore(colName, deltaSpaceLog, versionVecValueLog,
 							insertLog, versionColumnLog, hashtableLog);
 				}
 			}
+			cout << "Restored from log file: " + redoFile << endl;
 			delete redoContent;
 		}
 		cout << "End redo log restore !" << endl;

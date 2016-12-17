@@ -11,8 +11,8 @@
 
 #include <math.h>
 #include <iostream>
-#include <vector>
 #include <string>
+#include <vector>
 #include <map>
 #include <stdexcept>
 #include <algorithm>
@@ -22,19 +22,22 @@
 #include "PackedArray.h"
 #include "Transaction.h"
 #include "Logging.h"
-#include <stdio.h>
+#include "GarbageCollector.h"
 
 namespace std {
 
 template<typename T>
-class Column: public ColumnBase {
+class Column : public ColumnBase {
 private:
 	// value vector for column
 	vector<size_t>* vecValue;
-	// bit packing
+
+	// bit packing array
 	PackedArray* packed;
+
 	// dictionary vector for column
 	Dictionary<T>* dictionary;
+
 	// bulk insert ?
 	bool bulkInsert = false;
 
@@ -56,7 +59,6 @@ private:
 	vector<version_column>* versionColumn;
 	Dictionary<T>* deltaSpace;
 	map<size_t, size_t>* hashtable;
-
 	// Transaction
 	Transaction tx;
 public:
@@ -120,8 +122,6 @@ public:
 		for (size_t i = 0; i < (*vecValue).size() && i < row; i++) {
 			cout << "vecValue[" << i << "] = " << (*vecValue)[i] << "\n";
 		}
-		// free vecValue
-		vecValue->resize(0);
 	}
 
 	void bitPackingVecValue() {
@@ -149,11 +149,6 @@ public:
 		return vecValue;
 	}
 
-	void updateVecValue(T& value) {
-		// used for column has few duplicate values
-		vecValue->push_back(value);
-	}
-
 	Dictionary<T>* getDictionary() {
 		if (dictionary == NULL) {
 			dictionary = new Dictionary<T>();
@@ -162,14 +157,8 @@ public:
 	}
 
 	// Update new value for dictionary
-	void updateDictionary(T& value, bool sorted = true, bool bulkInsert = true,
-			uint64_t csn = 0) {
-		// no bulk insert if no sort
-		if (!sorted)
-			bulkInsert = false;
+	void updateDictionary(T& value, bool sorted = true, bool bulkInsert = true, uint64_t csn = 0) {
 		this->bulkInsert = bulkInsert;
-
-		dictionary->setSorted(sorted);
 		dictionary->addNewElement(value, vecValue, sorted, bulkInsert);
 		if (!bulkInsert) {
 			// build dataColumn vector
@@ -184,19 +173,22 @@ public:
 	bool isBulkInsert() {
 		return bulkInsert;
 	}
+
+	// bulk insert -> update vecValue after building entire dictionary
 	void bulkBuildVecVector(uint64_t csn = 0) {
-		// bulk insert -> update vecValue after building entire dictionary
 		vecValue->resize(0);
+		// sort dictionary
+		dictionary->sort();
+		dictionary->setSorted(true);
+		// get bulkVecValue vector
 		vector<T>* bulkVecValue = dictionary->getBulkVecValue();
 		if (bulkVecValue != NULL) {
 			for (size_t i = 0; i < bulkVecValue->size(); i++) {
 				// find position of valueId in dictionary
 				vector<size_t> result;
-				dictionary->search(bulkVecValue->at(i), ColumnBase::equalOp,
-						result);
+				dictionary->search(bulkVecValue->at(i), ColumnBase::equalOp, result);
 				size_t pos = result[0];
-				if (pos != -1)
-					vecValue->push_back(pos);
+				if (pos != -1) vecValue->push_back(pos);
 			}
 			// build dataColumn vector
 			dataColumn->resize(0);
@@ -212,12 +204,13 @@ public:
 	}
 
 	void createInvertedIndex() {
+		cout << "Creating inverted index for column: " << this->getName() << endl;
 		if (dictionary != NULL)
 			dictionary->buildInvertedIndex();
 	}
 
 	bool selection(T& searchValue, ColumnBase::OP_TYPE q_where_op,
-			vector<bool>* q_resultRid, bool initResultRid = true) {
+					vector<bool>* q_resultRid, bool initResultRid = true) {
 		// init q_resultRid to all true
 		if (initResultRid)
 			for (size_t i = 0; i < numOfRows(); i++) {
@@ -227,16 +220,13 @@ public:
 		this->getDictionary()->search(searchValue, q_where_op, result);
 
 		// find rowId with appropriate dictionary position
-		for (size_t rowId = 0; rowId < this->numOfRows(); rowId++) {
-			size_t encodedValue = this->vecValueAt(rowId);
-			if ((q_where_op != ColumnBase::containOp
-					&& encodedValue >= result.front()
-					&& encodedValue <= result.back())
-					|| (q_where_op == ColumnBase::containOp
-							&& binary_search(result.begin(), result.end(),
-									encodedValue))) {
+		for (size_t rowId = 0; !result.empty() && rowId < this->vecValueSize(); rowId++) {
+			size_t dictPosition = this->vecValueAt(rowId);
+			if ((q_where_op != ColumnBase::containOp && dictPosition >= result.front() && dictPosition <= result.back())
+				|| (q_where_op == ColumnBase::containOp && binary_search(result.begin(), result.end(), dictPosition))) {
 				// do nothing, keep q_resultRid true
-			} else {
+			}
+			else {
 				// update to false -> not in result
 				q_resultRid->at(rowId) = false;
 			}
@@ -244,8 +234,7 @@ public:
 		return true;
 	}
 
-	vector<T> projection(vector<bool>* q_resultRid, size_t limit,
-			size_t& limitCount) {
+	vector<T> projection(vector<bool>* q_resultRid, size_t limit, size_t& limitCount) {
 		vector<T> outputs; // output result
 		limitCount = 0; // reset limit count
 		for (size_t rid = 0; rid < q_resultRid->size(); rid++) {
@@ -253,17 +242,28 @@ public:
 				size_t encodeValue = this->vecValueAt(rid);
 				T* a = this->getDictionary()->lookup(encodeValue);
 				outputs.push_back(*a);
-				if (++limitCount >= limit)
-					break;
+				if (++limitCount >= limit) break;
 			}
 		}
 
 		return outputs;
 	}
 
+	vector<T> projection(vector<int>* q_resultRid, size_t limit, size_t& limitCount) {
+		vector<T> outputs; // output result
+		limitCount = 0; // reset limit count
+		for (size_t i = 0; i < q_resultRid->size(); i++) {
+			size_t encodeValue = this->vecValueAt(q_resultRid->at(i));
+			T* a = this->getDictionary()->lookup(encodeValue);
+			outputs.push_back(*a);
+			if (++limitCount >= limit) break;
+		}
+
+		return outputs;
+	}
+
 	// Build hashmap of valueId based on selected row ids
-	void buildHashmap(map<size_t, vector<size_t>>& hashmap,
-			vector<bool>* vecRowId) {
+	void buildHashmap(map<size_t, vector<size_t>>& hashmap, vector<bool>* vecRowId) {
 		hashmap.clear();
 		for (size_t rowId = 0; rowId < vecRowId->size(); rowId++) {
 			// get valueId from bit packing if row id is selected
@@ -276,8 +276,7 @@ public:
 	}
 
 	// Return vector of matching row ids
-	vector<size_t> probe(map<size_t, vector<size_t>>* hashmap,
-			size_t probedValue) {
+	vector<size_t> probe(map<size_t, vector<size_t>>* hashmap, size_t probedValue) {
 		if (hashmap != NULL) {
 			try {
 				return hashmap->at(probedValue);
@@ -316,11 +315,10 @@ public:
 		}
 	}
 
-	void setCSN(size_t rid, bool setMaximum = true) {
+	void setCSN(size_t rid) {
 		try {
 			data_column data = dataColumn->at(rid);
-			if (setMaximum)
-				data.csn = UINT64_MAX;
+			data.csn = UINT64_MAX;
 			dataColumn->at(rid) = data;
 		} catch (out_of_range& e) {
 			// nothing
@@ -328,10 +326,12 @@ public:
 	}
 
 	// VERSION SPACE
-	void addVersionVecValue(T& value, uint64_t csn, int rid, size_t txIdx, Logging* logging) {
+	void addVersionVecValue(T& value, uint64_t csn, int rid, size_t txIdx, Logging* logging, Transaction* transaction) {
+		// save undo log
+		saveUndoLog(transaction, txIdx, rid);
 		// set maximum csn so that another transaction cannot update
 		if (rid != -1)
-			this->setCSN(rid, true);
+			this->setCSN(rid);
 		// logging column start
 		logging->redoLogUpdate(txIdx, Logging::COLUMN_START, this->getName());
 		// add to delta space and version vector (start from last dictionary position)
@@ -349,6 +349,7 @@ public:
 		if (rid == -1) {
 			// add new in data column
 			data_column newData;
+			newData.csn = 0;
 			dataColumn->push_back(newData);
 			rid = dataColumn->size() - 1;
 			// redo log for Insert case
@@ -407,8 +408,8 @@ public:
 	}
 
 	void redoLogRestore(vector<string>* deltaSpaceLog, vector<string>* versionVecValueLog,
-						vector<string>* insertLog,
-						vector<string>* versionColumnLog, vector<string>* hashtableLog) {
+					vector<string>* insertLog,
+					vector<string>* versionColumnLog, vector<string>* hashtableLog) {
 		// redo for delta space
 		this->deltaSpace->redoLogRestore(deltaSpaceLog);
 		// redo for versionVecValue
@@ -422,6 +423,7 @@ public:
 		if (insertLog != NULL && insertLog->size() >= 1) {
 			// add new in data column
 			data_column newData;
+			newData.csn = 0;
 			dataColumn->push_back(newData);
 		}
 		delete insertLog;
@@ -471,6 +473,10 @@ public:
 			versionColumn->push_back(newVersion);
 			// create a new entry for rid on Hash table
 			(*hashtable)[rid] = versionColumn->size() - 1;
+			// add rid into recentUpdateRids for Garbage collection
+			vector<size_t> updateRids;
+			updateRids.push_back(rid);
+			GarbageCollector::updateRecentlyUpdateRids(updateRids);
 		}
 		// update version_flag on DATA space
 		data_column dataValue = dataColumn->at(rid);
@@ -520,7 +526,7 @@ public:
 							size_t versionVecValueIdx = versionData.encodedValueIdx;
 							size_t dictIdx = this->versionVecValue->at(
 									versionVecValueIdx);
-							// lookup in Dictionary or Delta space
+							// lookup in Delta space
 							T* a = deltaSpace->lookup(dictIdx);
 							if (a != NULL) {
 								outputs.push_back(*a);
@@ -539,22 +545,28 @@ public:
 
 	void updateVersionSpace2DataSpace(size_t rid) {
 		try {
+			// check is insert ?
+			bool is_insert = false;
+			// get data at rid
+			data_column dataAtRid = dataColumn->at(rid);
+			is_insert = dataAtRid.csn == 0;
+
 			// get latest version of rid from hash table
 			size_t versionIdx = hashtable->at(rid);
 			version_column lastestVersion = versionColumn->at(versionIdx);
 			size_t encodedValue = versionVecValue->at(lastestVersion.encodedValueIdx);
 			// get dictionary value from delta space
 			T* a = deltaSpace->lookup(encodedValue);
+
 			// update this value into column's dictionary
 			vecValue = unpackingVecValue();
 			size_t newEncodedValue = dictionary->addNewElement(*a, vecValue, dictionary->getSorted(), false);
-			vecValue->pop_back();	// remove last item
+			if (!is_insert) vecValue->pop_back();	// remove last item if not is insert
 			bitPackingVecValue();
-			// get data at rid
-			data_column dataAtRid = dataColumn->at(rid);
+
 			// update vecValue and data at rid
 			updateVecValueAt(rid, newEncodedValue);
-			dataAtRid.csn = lastestVersion.csn;
+			dataAtRid.csn = lastestVersion.csn;	// lastest update csn
 			dataAtRid.encodedValueIdx = rid;	// index to vecValue
 			dataAtRid.versionFlag = true;
 			dataColumn->at(rid) = dataAtRid;
@@ -593,22 +605,22 @@ public:
 	// save to disk for checkpoint
 	vector<string> saveToDisk(string logPath) {
 		// save column basic information
-		string fileColToSave = logPath + "/column_" + to_string(Util::currentMilisecond());
+		string columnFileName = logPath + "/column_" + to_string(Util::currentMilisecond());
 		vector<string>* contentColToSave = new vector<string>();
 		contentColToSave->push_back(this->getName());
 		contentColToSave->push_back(this->typeToString(this->getType()));
-		Util::saveToDisk(contentColToSave, fileColToSave);
+		Util::saveToDisk(contentColToSave, columnFileName);
 		// save dictionary
-		string fileDictToSave = this->dictionary->saveToDisk(logPath);
+		string dictionaryFileName = this->dictionary->saveToDisk(logPath);
 		// save vecValue
 		vecValue = unpackingVecValue();
-		string vecValueFileToSave = logPath + "/vecValue_" + to_string(Util::currentMilisecond());
+		string vecValueFileName = logPath + "/vecValue_" + to_string(Util::currentMilisecond());
 		vector<string>* vecValueToSave = new vector<string>();
 		for (size_t v : (*vecValue)) {
 			vecValueToSave->push_back(to_string(v));
 		}
 		vecValue->resize(0);
-		Util::saveToDisk(vecValueToSave, vecValueFileToSave);
+		Util::saveToDisk(vecValueToSave, vecValueFileName);
 		// save dataColumn
 		string dataColumnFileName = logPath + "/dataColumn_" + to_string(Util::currentMilisecond());
 		vector<string>* dataColumnToSave = new vector<string>();
@@ -620,9 +632,10 @@ public:
 		Util::saveToDisk(dataColumnToSave, dataColumnFileName);
 		// return saved files
 		vector<string> fileToSave;
-		fileToSave.push_back(fileColToSave);
-		fileToSave.push_back(fileDictToSave);
-		fileToSave.push_back(vecValueFileToSave);
+		fileToSave.push_back(columnFileName);
+		fileToSave.push_back(dictionaryFileName);
+		fileToSave.push_back(vecValueFileName);
+		fileToSave.push_back(dataColumnFileName);
 		return fileToSave;
 	}
 
@@ -677,28 +690,27 @@ public:
 		}
 		// log versionColumn
 		vector<string>* versionColumnLog = new vector<string>();
-		if (rid != -1) {
-			// update case
+		try {
+			// check if existed version
 			version_column versionColumnValue = versionColumn->at(rid);
 			versionColumnLog->push_back(to_string(rid));
 			versionColumnLog->push_back(to_string(versionColumnValue.encodedValueIdx));
 			versionColumnLog->push_back(to_string(versionColumnValue.csn));
 			// next pointer no change because new version will point to this
-		}
-		else {
-			// insert case => save number of current row
+		} catch (exception& e) {
+			// not existed version -> save current number of rows
 			versionColumnLog->push_back(to_string(versionColumn->size()));
 		}
 		// log hashtable
 		vector<string>* hashtableLog = new vector<string>();
-		for(map<size_t, size_t>::iterator it = hashtable.begin(); it != hashtable.end(); ++it) {
+		for(map<size_t, size_t>::iterator it = hashtable->begin(); it != hashtable->end(); ++it) {
 			hashtableLog->push_back(to_string(it->first));
 			hashtableLog->push_back(to_string(it->second));
 		}
 		// log dataColumn
 		vector<string>* dataColumnLog = new vector<string>();
 		if (rid != -1) {
-			// just only log in update case
+			// update case
 			data_column dataColumnValue = dataColumn->at(rid);
 			dataColumnLog->push_back(to_string(rid));
 			dataColumnLog->push_back(to_string(dataColumnValue.encodedValueIdx));
@@ -747,7 +759,36 @@ public:
 			size_t oldNumOfRows = stol(undoValue.versionColumn->at(0));
 			versionColumn->resize(oldNumOfRows);
 		}
+		// restore dataColumn
+		if (undoValue.dataColumn->size() >= 4) {
+			// update case
+			size_t rid = stol(undoValue.dataColumn->at(0));
+			size_t encodedValueIdx = stol(undoValue.dataColumn->at(1));
+			uint64_t csn = stol(undoValue.dataColumn->at(2));
+			bool versionFlag = undoValue.dataColumn->at(3) != "0";
+
+			data_column dataValue = dataColumn->at(rid);
+			dataValue.encodedValueIdx = encodedValueIdx;
+			dataValue.csn = csn;
+			dataValue.versionFlag = versionFlag;
+			dataColumn->at(rid) = dataValue;
+		}
+		else if (undoValue.dataColumn->size() == 1) {
+			// insert case => delete all new values
+			size_t oldNumOfRows = stol(undoValue.dataColumn->at(0));
+			dataColumn->resize(oldNumOfRows);
+		}
+		// restore hashtable
+		if (undoValue.hashtable->size() >= 2) {
+			hashtable->clear();
+			for (size_t i = 0; i < undoValue.hashtable->size(); i = i+2) {
+				size_t key = stol(undoValue.hashtable->at(i));
+				size_t value = stol(undoValue.hashtable->at(i+1));
+				(*hashtable)[key] = value;
+			}
+		}
 	}
+
 };
 
 } /* namespace std */

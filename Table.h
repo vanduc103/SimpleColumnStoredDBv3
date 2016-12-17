@@ -14,6 +14,8 @@
 #include <iostream>
 #include "Column.h"
 #include "ColumnBase.h"
+#include "Transaction.h"
+#include "GarbageCollector.h"
 #include "Util.h"
 
 namespace std {
@@ -55,6 +57,7 @@ public:
 	}
 
 	ColumnBase* getColumnByName(string colName) {
+		//int tupleSize = tuple_size<decltype(m_columns)>::value;;
 		for (size_t i = 0; i < m_columns->size(); i++) {
 			ColumnBase* column = m_columns->at(i);
 			if (column->getName() == colName)
@@ -70,20 +73,76 @@ public:
 				Column<int>* col = (Column<int>*) colBase;
 				if (col->isBulkInsert())
 					col->bulkBuildVecVector(csn);
-				col->getDictionary()->clearTemp();
 				col->bitPackingVecValue();
+				col->getDictionary()->clearTemp();
 			}
 			else if (colBase->getType() == ColumnBase::charType ||
 					 colBase->getType() == ColumnBase::varcharType) {
 				Column<string>* col = (Column<string>*) colBase;
-				if (col->isBulkInsert()) {
-					col->bulkBuildVecVector(csn);
-				}
 				if (col->isCreateInvertedIndex()) {
 					col->createInvertedIndex();
 				}
-				col->getDictionary()->clearTemp();
 				col->bitPackingVecValue();
+				col->getDictionary()->clearTemp();
+			}
+		}
+	}
+
+	void processGarbageCollect(vector<size_t>* recentlyUpdatedRids, Transaction* transaction) {
+		// get active transactions
+		vector<size_t> vecActiveTx = transaction->listActiveTransaction();
+
+		// loop through all columns of table to garbage collecting
+		for (ColumnBase* colBase : (*this->columns())) {
+			if (colBase->getType() == ColumnBase::intType) {
+				Column<int>* col = (Column<int>*) colBase;
+				// from rid -> update Version space to Data space
+				// -> delete old versions
+				for (size_t i = 0; i < recentlyUpdatedRids->size(); i++) {
+					size_t rid = recentlyUpdatedRids->at(i);
+					// update Version space to Data space
+					col->updateVersionSpace2DataSpace(rid);
+
+					// check active Transaction to delete old versions
+					for (size_t k = 0; k < vecActiveTx.size(); k++) {
+						Transaction::transaction tx = transaction->getTransaction(vecActiveTx.at(k));
+						vector<size_t> vecRid = tx.vecRid;
+						bool beUsing = false;
+						for (size_t m = 0; m < vecRid.size(); m++) {
+							if (vecRid.at(m) == rid) {
+								beUsing = true; break;
+							}
+						}
+						if (beUsing) {
+							col->removeOldVersion(rid, tx.startTs);
+						}
+					}
+				}
+			}
+			else {
+				Column<string>* col = (Column<string>*) colBase;
+				// from rid -> update Version space to Data space
+				// -> delete old versions
+				for (size_t i = 0; i < recentlyUpdatedRids->size(); i++) {
+					size_t rid = recentlyUpdatedRids->at(i);
+					// update Version space to Data space
+					col->updateVersionSpace2DataSpace(rid);
+
+					// check active Transaction to delete old versions
+					for (size_t k = 0; k < vecActiveTx.size(); k++) {
+						Transaction::transaction tx = transaction->getTransaction(vecActiveTx.at(k));
+						vector<size_t> vecRid = tx.vecRid;
+						bool beUsing = false;
+						for (size_t m = 0; m < vecRid.size(); m++) {
+							if (vecRid.at(m) == rid) {
+								beUsing = true; break;
+							}
+						}
+						if (beUsing) {
+							col->removeOldVersion(rid, tx.startTs);
+						}
+					}
+				}
 			}
 		}
 	}
@@ -130,7 +189,7 @@ public:
 		size_t length = content->size();
 		for (size_t i = 1; i < length; i = i+5) {
 			// column type
-			string colType = content->at(i+1);
+			string colType = content->at(i);
 			ColumnBase* colBase = new ColumnBase();
 			if (colType == "INTEGER") {
 				Column<int>* col = new Column<int>();
@@ -169,6 +228,19 @@ public:
 		}
 	}
 
+	// undo column
+	void undoColumn(string colName, Transaction::undoSpace undoValue) {
+		if (colName == "") return;
+		ColumnBase* colBase = getColumnByName(colName);
+		if (colBase->getType() == ColumnBase::intType) {
+			Column<int>* col = (Column<int>*) colBase;
+			col->abort(undoValue);
+		}
+		else {
+			Column<string>* col = (Column<string>*) colBase;
+			col->abort(undoValue);
+		}
+	}
 };
 
 } /* namespace std */

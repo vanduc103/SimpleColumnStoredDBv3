@@ -36,12 +36,11 @@ public:
 		vector<string>* versionColumn;
 		vector<string>* dataColumn;
 	};
-	static vector<transaction>* vecTransaction;
+	static vector<transaction*>* vecTransaction;
 	static vector<size_t>* vecActiveTransaction;
 	static vector<size_t>* vecWaitingTransaction;
 
 private:
-
 	vector<undoSpace>* vecUndo;
 
 public:
@@ -61,10 +60,16 @@ public:
 	vector<size_t> getWaitingList();
 	void setClient(size_t txIdx, ServerSocket* client);
 	void setCommand(size_t txIdx, vector<string> command);
+	ServerSocket* getClient(size_t txIdx);
+	vector<string> getCommand(size_t txIdx);
+	Transaction::TRANSACTION_STATUS getStatus(size_t txIdx);
+	vector<size_t> getVecRid(size_t txIdx);
 
 	// Undo
 	void saveUndoSpace(size_t txIdx, undoSpace undoValue);
 	vector<undoSpace> getUndoSpace(size_t txIdx);
+	void removeUndoSpace(size_t txIdx);
+	bool checkExistsUndo(size_t txIdx);
 };
 
 } /* namespace std */

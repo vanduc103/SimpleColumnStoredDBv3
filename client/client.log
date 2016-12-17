@@ -1,9 +1,0 @@
-[Sending]	CREATE
-[Response]
-Create table 'orders' successfully !
-[Sending]	UPDATE|1|8888
-[Response]
-Updated 1 row with rid = 1
-[Sending]	INSERT|8888|A|45678|duclv
-[Response]
-INSERTED 1 row ! Number of rows is: 15001

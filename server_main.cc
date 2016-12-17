@@ -4,19 +4,19 @@
 #include <stdio.h>
 #include <string>
 #include <iostream>
+#include <fstream>
 #include <thread>
 #include <map>
-#include "TestCpp.h"
+#include "App.h"
 #include "Table.h"
 #include "GarbageCollector.h"
 
 using namespace std;
 
 
-void restartWaitingTransaction(int interval, Transaction* transaction,
-		Table* table, GarbageCollector* garbage, ServerSocket* server)
+void restartWaitingTransaction(int interval, Transaction* transaction, Table* table)
 {
-	std::thread([interval, transaction, table, garbage, server]()
+	std::thread([interval, transaction, table]()
 	{
 		while (true) {
 			std::this_thread::sleep_for(
@@ -25,19 +25,16 @@ void restartWaitingTransaction(int interval, Transaction* transaction,
 			vector<size_t> txWaitingList = transaction->getWaitingList();
 			for (size_t i = 0; i < txWaitingList.size(); i++) {
 				cout << "waiting transaction #" << i << endl;
-				Transaction::transaction tx = transaction->getTransaction(txWaitingList.at(i));
-				size_t txIdx = tx.txnId;
-				ServerSocket* client = tx.client;
+				size_t txIdx = txWaitingList.at(i);
+				ServerSocket* client = transaction->getClient(txIdx);
 				// execute command and return to client
 				Logging* logging = new Logging();
-				string result = updateCommand(client, table, transaction, logging, tx.command, garbage, txIdx);
-				if (client != NULL) {
-					try {
-						server->accept(*client);
+				string result = updateCommand(client, table, transaction, logging, transaction->getCommand(txIdx), txIdx);
+				try {
+					if (result != "WAITING")
 						(*client) << result;
-					} catch(SocketException& e) {
-						std::cout<< "Exception caught: " << e.description() << std::endl;
-					}
+				} catch(SocketException& e) {
+					std::cout<< "Exception caught: " << e.description() << std::endl;
 				}
 			}
 		}
@@ -73,7 +70,7 @@ void startThreads(Table* table, ServerSocket* server) {
 	garbage->start(10000);
 
 	// restart waiting transaction as thread
-	restartWaitingTransaction(10000, transaction, table, garbage, server);
+	restartWaitingTransaction(10000, transaction, table);
 }
 
 int main(int argc, char* argv[]) {
@@ -87,16 +84,24 @@ int main(int argc, char* argv[]) {
     	int port = 30000;
         ServerSocket server(port);
         std::cout << ">>>> Server is listening at port: " << port << std::endl;
+        std::ofstream log ("server.log");
 
         while(true) {
+        	// accept new clients
             ServerSocket client;
             server.accept(client);
 
+            // transaction
+			Transaction* transaction = new Transaction();
+			// logging
+			Logging* logging = new Logging();
             try {
+            	// process client commands
                 while(true) {
                     std::string data;
                     client >> data;
                     std::cout << "[Received]\t" << data << std::endl;
+                    log << "\n[Received]\t" << data << std::endl;
 
                     /* CODE BEGIN */
                     // split data into command
@@ -113,35 +118,32 @@ int main(int argc, char* argv[]) {
 					token = data.substr(last);
 					command.push_back(token);
 
-					// transaction
-					Transaction* transaction = new Transaction();
-					// logging
-					Logging* logging = new Logging();
-					// garbage collection
-					GarbageCollector* garbage = new GarbageCollector(table, transaction);
-
 					// command type
 					string commandType = command.at(0);
 					string result = "";
 					if (commandType == "CREATE") {
 						cout << ">> Create table" << endl;
 						table = createTable(createQuery);
-						if (table != NULL)
+						if (table != NULL) {
 							result = "Create table '" + table->getName() + "' successfully !";
+							startThreads(table, &server);
+						}
 					}
 					else if (commandType == "RESTORE") {
 						cout << ">> Restore database" << endl;
 						// init table
 						table = new Table();
 						logging->restore(table);
+						printTableInfo(table);
 						result = "Restore database successfully !";
+						startThreads(table, &server);
 					}
 					else if (commandType == "UPDATE") {
 						cout << ">> Update command" << endl;
 						if (table == NULL)
 							result = "No table found !";
 						else
-							result = updateCommand(&client, table, transaction, logging, command, garbage);
+							result = updateCommand(&client, table, transaction, logging, command);
 					}
 					else if (commandType == "INSERT") {
 						cout << ">> Insert command" << endl;
@@ -162,7 +164,7 @@ int main(int argc, char* argv[]) {
 						if (table == NULL)
 							result = "No table found !";
 						else
-							result = updateCommand(&client, table, transaction, logging, command, garbage);
+							result = updateCommand(&client, table, transaction, logging, command);
 					}
 					else if (commandType == "INSERT_WITH_ABORT") {
 						cout << ">> Insert with abort command" << endl;
@@ -181,11 +183,11 @@ int main(int argc, char* argv[]) {
 					else {
 						result = "NO VALID COMMAND FOUND !";
 					}
-					delete logging;
-					delete transaction;
-					delete garbage;
 					// send result to client
-					client << result;
+					if (result != "WAITING")
+						client << result;
+					log << "Result:\n" << result << endl;
+					log.flush();
                     /* CODE  END  */
                 }
             } catch(SocketException&) {}

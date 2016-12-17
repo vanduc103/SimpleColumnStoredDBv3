@@ -13,12 +13,11 @@
 #include <fstream>
 #include <iostream>
 #include <string>
-#include "boost/filesystem.hpp"
 
 #ifndef UTIL_H_
 #define UTIL_H_
 
-namespace std {
+using namespace std;
 
 class Util {
 public:
@@ -29,6 +28,11 @@ public:
 			if (ele) ++count;
 		}
 		return count;
+	}
+
+	static inline void printLoading(size_t row) {
+		if (row % 800000 == 0) cout << endl;
+		if (row % 10000 == 0) cout << ".";
 	}
 
 	static size_t currentMilisecond() {
@@ -63,21 +67,34 @@ public:
 		if (content != "" && fileName != "") {
 			std::ofstream ofs;
 			ofs.open(fileName, ofstream::app);
+			ofs << content << endl;
+			ofs.flush();
+			ofs.close();
 		}
 	}
 
-	static void createFolder(string folderPath) {
+	static void getContentFromMasterFile(string masterFile, string pattern, vector<string> &content) {
+		if (masterFile != "" && pattern != "") {
+			ifstream infile(masterFile);
+			string line;
+			while(getline(infile, line)) {
+				size_t pos = line.find(pattern);
+				if (pos != string::npos)
+					content.push_back(line.substr(pos + pattern.length() + 1));
+			}
+			infile.close();
+		}
+	}
+
+	/*static void createFolder(string folderPath) {
 		boost::filesystem::path dir(folderPath);
 		boost::filesystem::remove_all(dir);
 		boost::filesystem::create_directory(dir);
-	}
+	}*/
 
-	static string getLatestFile(string folderPath, string pattern);
-	static vector<string> getNewestFiles(string folderPath, string pattern, long aTime);
 	static void parseContentToVector(vector<string>* data, string content, string delim);
 
+	static string substr(string s, string pattern);
 };
-
-} /* namespace std */
 
 #endif /* UTIL_H_ */
