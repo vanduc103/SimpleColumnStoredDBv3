@@ -1,5 +1,5 @@
-# SimpleColumnStoredDBv2
-A simple column-store data processing: MVCC implementation
+# SimpleColumnStoredDBv3
+A simple column-store data processing: Log manager implementation (undo and redo)
 --------------------
 How to build and run
 --------------------

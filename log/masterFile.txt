@@ -1,4 +1,2 @@
-checkpoint:log/checkpoint_13574325
-redo_log:log/redo_log_13604639
-redo_log:log/redo_log_13634640
-redo_log:log/redo_log_16604647
+checkpoint:log/checkpoint_358104
+redo_log:log/redo_log_388554

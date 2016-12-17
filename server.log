@@ -1,50 +1,13 @@
 
-[Received]	CREATE
+[Received]	RESTORE
 Result:
-Create table 'orders' successfully !
-
-[Received]	INSERT|8888|A|1331|duclv
-Result:
-INSERTED 1 row ! Number of rows is: 14968
-
-[Received]	SCAN|8888|o_orderkey|=
-Result:
-o_orderkey, o_orderstatus, o_totalprice, o_comment, 
-8888,      "A",   1331,   "duclv",   
-Showing 1/1 results !
-Query time: 0.00037 seconds 
-
-
-[Received]	UPDATE|1|8888
-Result:
-Updated 1 row with rid = 1
-
-[Received]	SCAN|8888|o_orderkey|=
-Result:
-o_orderkey, o_orderstatus, o_totalprice, o_comment, 
-8888,      "A",   1331,   "duclv",   
-Showing 1/1 results !
-Query time: 0.000367 seconds 
-
+Restore database successfully !
 
 [Received]	SCAN|8888|o_orderkey|=
 Result:
 o_orderkey, o_orderstatus, o_totalprice, o_comment, 
 8888,      "O",   181229,   "al accounts haggle bli",   
-8888,      "A",   1331,   "duclv",   
+8888,      "A",   3456,   "duclv",   
 Showing 2/2 results !
-Query time: 0.000383 seconds 
-
-
-[Received]	INSERT|8888|A|45666|duclv
-Result:
-INSERTED 1 row ! Number of rows is: 14969
-
-[Received]	SCAN|A|o_orderstatus|=
-Result:
-o_orderkey, o_orderstatus, o_totalprice, o_comment, 
-8888,      "A",   1331,   "duclv",   
-8888,      "A",   45666,   "duclv",   
-Showing 2/2 results !
-Query time: 0.000342 seconds 
+Query time: 0.000654 seconds 
 
