@@ -8,14 +8,13 @@
 
 using namespace std;
 
-int main(int argc, char* argv[]) {
+int main1(int argc, char* argv[]) {
     try {
         // Create the Socket
         ClientSocket c_socket("localhost", 30000);
         std::string command;
         std::string reply;
 
-        //std::ifstream in("orders_sample.tbl");
         std::ofstream out("client.log");
 
         while(true) {
@@ -23,7 +22,6 @@ int main(int argc, char* argv[]) {
             getline(cin, command);
             if(command != "") {
                 try {
-                    //std::string message = "INSERT|" + line;
                     out << "[Sending]\t" + command + "\n";
                     std::cout << "[Sending]\t" + command + "\n";
                     c_socket << command;
